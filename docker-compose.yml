@@ -1,0 +1,133 @@
+version: "3.8"
+
+services:
+
+  # ------------------------------------------------------------------
+  # مرحله ۱: دیتابیس Postgresql
+  # ------------------------------------------------------------------
+  db:
+    image: postgres:16
+    container_name: cities_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: pass
+      POSTGRES_DB: cities_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U user -d cities_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ------------------------------------------------------------------
+  # مرحله ۳: دیتابیس Redis به عنوان کش LRU
+  # ------------------------------------------------------------------
+  redis:
+    image: redis:7
+    container_name: cities_redis
+    restart: unless-stopped
+    command: ["redis-server", "--maxmemory-policy", "allkeys-lru"]
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ------------------------------------------------------------------
+  # مرحله ۴: Apache Kafka (+ Zookeeper)
+  # ------------------------------------------------------------------
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.6.1
+    container_name: cities_zookeeper
+    restart: unless-stopped
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+
+  kafka:
+    image: confluentinc/cp-kafka:7.6.1
+    container_name: cities_kafka
+    restart: unless-stopped
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,PLAINTEXT_HOST://0.0.0.0:29092
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-topics --bootstrap-server localhost:9092 --list"]
+      interval: 5s
+      timeout: 5s
+      retries: 15
+
+  # topic مربوط به لاگ اپلیکیشن را می‌سازد و سپس خارج می‌شود
+  kafka-init:
+    image: confluentinc/cp-kafka:7.6.1
+    container_name: cities_kafka_init
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: ["bash", "-c"]
+    command:
+      - |
+        kafka-topics --bootstrap-server kafka:9092 \
+          --create --if-not-exists \
+          --topic city_logs \
+          --partitions 1 \
+          --replication-factor 1
+
+  # ------------------------------------------------------------------
+  # مرحله ۲ و ۵: سرویس FastAPI
+  # ------------------------------------------------------------------
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: cities_app
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+    environment:
+      DATABASE_URL: postgresql://user:pass@db:5432/cities_db
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_TOPIC: city_logs
+    ports:
+      - "8000:8000"
+
+  # ------------------------------------------------------------------
+  # مرحله ۱ (بخش دوم): پر کردن دیتابیس از روی فایل‌های CSV پوشه Cities
+  # یک بار اجرا می‌شود و خارج می‌شود (می‌توان دستی هم با: docker compose run seed اجرا کرد)
+  # ------------------------------------------------------------------
+  seed:
+    build:
+      context: .
+      dockerfile: Dockerfile.seed
+    container_name: cities_seed
+    depends_on:
+      - app
+    environment:
+      API_URL: http://app:8000/city
+      CITIES_DIR: Cities
+    restart: "no"
+
+volumes:
+  pg_data:
