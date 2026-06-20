@@ -12,27 +12,20 @@ Base.metadata.create_all(bind=engine)
 
 app = FastAPI()
 
-# ------------------------------------------------------------------
-# تنظیمات کش LRU: فقط ۱۰ ریکوئست آخر کش شوند
-# ------------------------------------------------------------------
-LRU_TRACKER_KEY = "cache:lru_keys"   # لیست Redis که ترتیب key های کش‌شده را نگه می‌دارد
+LRU_TRACKER_KEY = "cache:lru_keys"
 LRU_CAPACITY = 10
 
-# شمارنده‌های آمار hit/miss از ابتدای اجرای اپلیکیشن (در حافظه پروسه)
 stats = {"hits": 0, "total": 0}
 
 
 def cache_set(city: str, country_code: str):
-    """مقدار را در Redis ست می‌کند و فقط ۱۰ ریکوئست آخر را نگه می‌دارد (LRU)."""
     pipe = r.pipeline()
     pipe.set(city, country_code, ex=CACHE_TTL_SECONDS)
 
-    # اگر city از قبل در tracker بوده، حذفش کن تا دوباره به جلو منتقل شود
     pipe.lrem(LRU_TRACKER_KEY, 0, city)
     pipe.lpush(LRU_TRACKER_KEY, city)
     pipe.execute()
 
-    # اگر بیش از ۱۰ تا شد، قدیمی‌ترین‌ها را حذف کن
     size = r.llen(LRU_TRACKER_KEY)
     if size > LRU_CAPACITY:
         oldest = r.lrange(LRU_TRACKER_KEY, LRU_CAPACITY, -1)
@@ -43,15 +36,11 @@ def cache_set(city: str, country_code: str):
 
 
 def cache_touch(city: str):
-    """وقتی روی key موجود hit می‌خوریم، آن را در tracker به جلو منتقل می‌کند و TTL را تمدید می‌کند."""
     r.expire(city, CACHE_TTL_SECONDS)
     r.lrem(LRU_TRACKER_KEY, 0, city)
     r.lpush(LRU_TRACKER_KEY, city)
 
 
-# ------------------------------------------------------------------
-# مرحله ۲: API ایجاد/آپدیت شهر در Postgres
-# ------------------------------------------------------------------
 @app.post("/city")
 def create_or_update_city(data: CitySchema):
     db = SessionLocal()
@@ -70,9 +59,6 @@ def create_or_update_city(data: CitySchema):
         db.close()
 
 
-# ------------------------------------------------------------------
-# مرحله ۵: API دریافت CountryCode با کش Redis و لاگ Kafka
-# ------------------------------------------------------------------
 @app.get("/city/{city}")
 def get_city(city: str):
     start = time.perf_counter()
@@ -81,7 +67,6 @@ def get_city(city: str):
     stats["total"] += 1
 
     if cached is not None:
-        # cache hit
         stats["hits"] += 1
         cache_touch(city)
 
@@ -97,7 +82,6 @@ def get_city(city: str):
 
         return {"city": city, "country_code": cached, "source": "cache"}
 
-    # cache miss -> fallback به Postgres
     db = SessionLocal()
     try:
         result = db.query(City).filter(City.city == city).first()
@@ -117,7 +101,6 @@ def get_city(city: str):
         })
         return {"error": "not found"}
 
-    # آپدیت کش با محدودیت LRU به ظرفیت ۱۰ و TTL ده دقیقه
     cache_set(city, result.country_code)
 
     log_event({

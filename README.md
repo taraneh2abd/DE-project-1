@@ -1,5 +1,9 @@
 # DE-project-1
 
+you can clear the DB and kafka and Redis as said below and also add the CSV to the DB from db-init.py script.
+
+redis and kafka logs are triggered when a POST is recieved.
+
 ## how to run
 
 ```bash
