@@ -1,12 +1,12 @@
 # DE-project-1
 
-## اجرا
+## how to run
 
 ```bash
 docker compose up --build
 docker compose up --no-build
 ```
-document:  http://127.0.0.1:8000/docs#/default/get_city_city__city__get
+document:  http://127.0.0.1:8000/docs#/
 
 ## create kafka topic
 
@@ -60,6 +60,6 @@ OR get into container then``psql -U user -d cities_db``
 ```SELECT * FROM cities limit 10;```
 
 ```SELECT COUNT(*) FROM cities;```
-```TRUNCATE TABLE cities RESTART IDENTITY CASCADE;``
+``TRUNCATE TABLE cities RESTART IDENTITY CASCADE;``
 
 
